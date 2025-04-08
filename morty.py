@@ -5,31 +5,19 @@ import requests
 import sounddevice as sd
 import pyttsx3
 from vosk import Model, KaldiRecognizer
-import json
-import queue
-import random
-import requests
-import sounddevice as sd
-import pyttsx3
 import webbrowser
 import time
-from vosk import Model, KaldiRecognizer
 
-# Модель Vosk
-model = Model("model")
-recognizer = KaldiRecognizer(model, 16000)
-q = queue.Queue()
+# подгрузка модели vosk
+recognizer = KaldiRecognizer(Model("model"), 16000)
+audio_queue = queue.Queue() 
 
-# TTS
-engine = pyttsx3.init()
-engine.setProperty('rate', 170)
-
-# Флаги и состояния
+# настройки TTS
+tts_engine = pyttsx3.init() # инит голосового движка
+tts_engine.setProperty('rate', 180) #cкорость речи Морти
 is_speaking = False
-last_response_time = 0
-last_response = ("", "")
+last_speech_time = 0  # время последнего синтеза речи
 
-# фразы
 MORTY_PHRASES = {
     'greeting': [
         "Э-эм... привет, Рик! Я готов к работе... наверное",
@@ -58,53 +46,30 @@ MORTY_PHRASES = {
     ]
 }
 
-def get_input_device():
-    devices = sd.query_devices()
-    input_devices = []
-    for i, d in enumerate(devices):
-        if d['max_input_channels'] > 0:
-            print(f"{i}: {d['name']}")
-            input_devices.append(i)
-    
-    if not input_devices:
-        raise ValueError("No input devices found!")
-    
-    choice = int(input("Выберите микрофон: "))
-    return choice
+def audio_callback(indata, frames, time, _):#обрабатывает информацию с микро
+    data = bytes(indata) # преобразуем в массив байт (для Vosk)
+    if recognizer.AcceptWaveform(data):
+        result = json.loads(recognizer.Result()) #результат распознования
+        if result.get("text"):  # проверка на наличие текста
+            audio_queue.put(result["text"])
 
-def callback(indata, frames, time, status):
-    global is_speaking
-    if not is_speaking:
-        data = bytes(indata)
-        if recognizer.AcceptWaveform(data):
-            result = recognizer.Result()
-            text = json.loads(result)["text"]
-            q.put(text)
 
-# Говорит Морти
-def say_morty(key, result=None):
-    global is_speaking, last_response_time, last_response
-    is_speaking = True
-    
-    phrase = random.choice(MORTY_PHRASES[key])
+def say_morty(key, result=None): #key - тип фразы
+    global last_speech_time
+    phrase = random.choice(MORTY_PHRASES[key]) #рандомная фраза по ключу
     if result:
         phrase = phrase.format(result=result)
-        last_response = (key, result)  # Сохраняем последний ответ
-    
-    print("🗣", phrase)
-    engine.say(phrase)
-    engine.runAndWait()
-    
-    is_speaking = False
-    last_response_time = time.time()
 
+    print("🤯", phrase)
+    tts_engine.say(phrase)  # синтез речи
+    tts_engine.runAndWait()  # ожидаем завершения синтеза
+    last_speech_time = time.time()  # обновляем время последней речи
 
-#  Ассистент Морти
 class MortyAssistant:
     def __init__(self):
-        self.current_character = {}
+        self.current_character = {} # словарь с данными от текущ персонаже
 
-    def random_character(self):
+    def random_character(self): #получаем слчайного персонажа из API 
         say_morty('action')
         char_id = random.randint(1, 826)
         res = requests.get(f"https://rickandmortyapi.com/api/character/{char_id}").json()
@@ -134,84 +99,70 @@ class MortyAssistant:
         from io import BytesIO
         img_data = requests.get(self.current_character["image"]).content
         img = Image.open(BytesIO(img_data))
-        res = f"{img.width} на {img.height} пикселей"
+        res = f"{img.width}×{img.height} пикселей"
         say_morty('result', result=res)
 
     def handle_command(self, command):
         cmd = command.lower()
         if 'случайный' in cmd:
             self.random_character()
-        elif 'показать' in cmd and self.current_character:
+        elif 'покажи' in cmd and self.current_character:
             self.show_image()
-        elif 'сохранить' in cmd and self.current_character:
+        elif 'сохрани' in cmd and self.current_character:
             self.save_image()
         elif 'эпизод' in cmd and self.current_character:
             self.first_episode()
-        elif 'разрешение' in cmd and self.current_character:
+        elif 'разрешени' in cmd and self.current_character:
             self.get_resolution()
         elif 'статус' in cmd and self.current_character:
             status = self.current_character.get('status', 'неизвестен')
             say_morty('result', result=f"его статус — {status}")
-        elif 'локация' in cmd and self.current_character:
+        elif 'локаци' in cmd and self.current_character:
             location = self.current_character.get('location', {}).get('name', 'неизвестная локация')
             say_morty('result', result=f"он находится в {location}")
         elif 'где он был' in cmd and self.current_character:
             episodes = self.current_character.get('episode', [])
             num = len(episodes)
-            say_morty('result', result=f"он появился в  {num} эпизодах")
+            say_morty('result', result=f"он появился в {num} эпизодах")
         elif 'выход' in cmd or 'стоп' in cmd:
             say_morty('exit')
             return False
         else:
             say_morty('error')
         return True
-    
-# Загрузка голосовой модели
-model = Model("model")  # путь к распакованной папке модели
-recognizer = KaldiRecognizer(model, 16000)
-q = queue.Queue()
-
-# Настройка синтеза речи
-engine = pyttsx3.init()
-engine.setProperty('rate', 170)
-
-# Переменная для хранения текущего персонажа
-current_character = {}
-
-# Функция для обработки аудио в реальном времени
-def callback(indata, frames, time, status):
-    data = bytes(indata)
-    if recognizer.AcceptWaveform(data):
-        result = recognizer.Result()
-        text = json.loads(result)["text"]
-        q.put(text)
 
 def main():
     morty = MortyAssistant()
-    device = get_input_device()
+    device = 1 #микрофон
     
     say_morty('greeting')
     
-    with sd.RawInputStream(device=device,
-                          samplerate=16000,
-                          blocksize=8000,
-                          dtype='int16',
-                          channels=1,
-                          callback=callback):
+    with sd.RawInputStream( # считываем аудио с микро
+        device=device,
+        samplerate=16000,
+        blocksize=8000,
+        dtype='int16',
+        channels=1,
+        callback=audio_callback
+    ):
         while True:
-            global last_response_time
-            # Проверка таймаута
-            if time.time() - last_response_time > 10 and last_response[0]:
-                say_morty('error', last_response[1])
-            
+            global last_speech_time
+           
             try:
-                text = q.get(timeout=1)
-                print("📥 Ты сказал:", text)
-                if not morty.handle_command(text):
-                    break
+                text = audio_queue.get(timeout=1)
+                
+                # игнорируем команды, если прошло меньше 2 секунд после последней речи
+                if time.time() - last_speech_time < 2:
+                    continue
+                
+                if text.strip():  # Убедимся, что строка не пустая
+                    print("💀 Рик:", text)
+                    if not morty.handle_command(text):
+                        break
+                else:
+                    say_morty('error')
             except queue.Empty:
                 continue
 
 if __name__ == '__main__':
     main()
-
